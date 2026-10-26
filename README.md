@@ -7,7 +7,7 @@ Final Fantasy XIII**. One mod for all three games.
   person with a gamepad.
 - The HUD (gauges, minimap) floats on its own panel in front of you.
 - Menus, pre-rendered movies and the title screens are shown on a large flat screen.
-- An in-game settings menu changes most options without restarting.
+- An in-game settings menu changes most options without restarting (hold L3 + R3).
 
 The mod works on the game's Direct3D 9 output at runtime. It contains no game files and does not modify the games'
 program code.
