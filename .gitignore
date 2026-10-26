@@ -1,0 +1,11 @@
+build/
+dist/
+shared/xrbridge/build/
+shared/xrbridge/dist/
+*.pdb
+*.map
+*.obj
+*.ilk
+*.exp
+*.lib
+!shared/xrbridge/third_party/openxr/lib/*.lib

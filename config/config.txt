@@ -1,0 +1,95 @@
+# FF XIII trilogy VR configuration (lives next to the game exe: ffxiiiimg.exe, ffxiii2img.exe or LRFF13.exe).
+# Lines starting with # are comments. Missing settings use their defaults.
+# Restart the game after editing.
+
+# ---- General ----
+# 1 = VR output (starts XrBridgeHost.exe), 0 = mod loads but only does diagnostics
+vr_enabled = 1
+# 0=error 1=warn 2=info 3=debug 4=trace
+log_level = 2
+
+# ---- Display ----
+# 1 = always run the game in a window (recommended while developing)
+force_windowed = 1
+# 1 = run the game on a D3D9Ex device (required for VR output)
+upgrade_to_ex = 1
+# 3D resolution per eye = the headset's recommended resolution x render_scale (1.00 = 100%, 0.75 = 75%, 1.25 = 125%).
+# 0 = the game's own resolution. render_width / render_height (both > 0) set an exact size instead.
+render_scale = 1.00
+render_width = 0
+render_height = 0
+# MSAA of the 3D scene at that resolution: game (4x, as the game asks), 0, 2, 4
+render_msaa = game
+# Phase lock: the game runs an exact, even 60 fps locked to the headset's refresh, so game frames are shown in a
+# fixed rhythm (90 Hz: 2,1,2,1 / 72 Hz: 1,1,1,1,2 / 120 Hz: 2,2) instead of drifting. 0 = off.
+headset_sync = 1
+# Phase lock below 60 Hz too: when a frame-generation layer (e.g. OFXR Bridge 3X) runs the VR output at 30 Hz, the
+# game still runs 60 and every second frame goes out at an even spacing, instead of an uneven pick from a free-running
+# game. Check ff13vr.log: "headset sync on: headset 30.00 Hz" means it is active; "headset 90.00 Hz" means OFXR
+# reports the full rate and the normal lock already gives an even 30. 0 = off.
+sync_below_60 = 0
+# Camera reprojection: between game frames the image is turned with the game camera, so camera pans look smooth at
+# 72/90 Hz instead of moving in steps. Only rotation is corrected: your character (which the camera orbits) may
+# wobble slightly while panning. 0 = off.
+# Headset test: near objects ghost badly (the camera orbits the character), so it is off by default.
+reproject = 0
+
+# ---- Virtual screen (current milestone: the normal game image on a big screen in the headset) ----
+# distance and width in meters
+screen_distance = 2.5
+screen_width = 3.2
+# Key that recenters the view (virtual-key code; 0x77 = F8)
+recenter_key = 0x77
+
+# ---- Stereo 3D (field, battles, real-time scenes; menus and movies stay on the flat screen) ----
+# 1 = render the 3D scene in stereo, 0 = flat screen only
+stereo = 1
+# native = both eyes every frame (scene drawn twice), aer = alternate eyes (one eye per frame, lighter on the GPU)
+vr_method = native
+# native only: 1 = draw the right eye once per render pass (far fewer render-target switches, which cost some GPUs a
+# lot), 0 = right after every left-eye draw (the old way; slightly less CPU work)
+native_batch = 1
+# 1 = headset FOV (fills your view), 0 = game FOV (a smaller window into the world; use if things vanish at the edges)
+fov_mode = 1
+# The game only draws what its own camera sees (62 x 38 degrees), so things at the edges of your view (e.g. a ceiling
+# when you look up) can be missing. This widens the game camera's culling by this factor (1 = off). Costs frame rate
+# (more objects drawn, twice in native): on a 3080 Ti, 1.5 = -8%, 2.0 = -20%, 3.0 = -37%. 3.0 covers looking up ~40 deg.
+cull_fov = 1.5
+# game units per meter (larger = world looks smaller)
+world_scale = 1.0
+# HUD panel in front of you (meters)
+hud_distance = 1.5
+hud_width = 1.6
+hud_offset_y = -0.05
+
+# ---- In-game settings menu ----
+# Open / close: hold the pad buttons below (300 ms) or press menu_key. l3r3 = both stick clicks, ltrt = both
+# triggers, none = keyboard only. menu_key is a virtual-key code (0x2D = Insert).
+menu_chord = l3r3
+menu_hold_ms = 300
+menu_key = 0x2D
+
+# ---- Diagnostics ----
+# Key that captures one frame of draw calls (virtual-key code; 0x7A = F11)
+capture_key = 0x7A
+# Also capture automatically at this frame number (0 = off)
+capture_at_frame = 0
+# Save a screenshot of the game image every N seconds to FF13VR\run_*\shots\ (0 = off), at most screenshot_max
+screenshot_interval = 0
+screenshot_max = 30
+
+# ---- Test automation ----
+# 1 = play the input script below after start (used to load a save without anyone at the PC)
+autoload = 0
+# Commands separated by '|' (';' starts a comment here):
+#   wait <seconds>, key <DIK name> [ms], button <n> [ms], pad <A|B|X|Y|START|UP|...> [ms], vk <virtual key> [ms],
+#   shot, capture, vrdump, recenter, devices, log <text>, quit
+# Title screen -> Load Game -> first save -> Yes -> 'Data loaded' OK -> recap 'Start' (tested with the Chapter 9 save)
+autoload_script = wait 12 | key RETURN | wait 5 | key RETURN | wait 5 | key RETURN | wait 5 | key RETURN | wait 3 | key RETURN | wait 6 | key RETURN | wait 25 | key RETURN | wait 15 | shot
+# Quit the game automatically after N seconds (0 = never)
+quit_after = 0
+
+# ---- Performance diagnostics (written to FF13VR\ff13vr.log every 10 s) ----
+# GPU busy time / render-thread CPU time per frame and the game's frame-time histogram
+perf_diag = 0
+pacing_diag = 0
