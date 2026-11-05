@@ -130,6 +130,63 @@ void StereoOnSetVS(void* shader) {
     ReleaseSRWLockShared(&g_layoutLock);
 }
 
+// ------------------------------------------------------------------ pixel shaders: screen-size reciprocal
+// Lightning Returns' fog pass and many materials read screen-space buffers at vPos * screenSizeReciprocal
+// ("$s_screenReciprocal" / "screenSizeReciprocal" = 1 / game resolution). On a resized target vPos is in headset
+// pixels, so with the game's value only the top-left game-sized corner was read and the rest clamped to streaks (t11:
+// the user's save area, where the height-fog pass copies the whole scene this way). The constant is divided by the
+// target's scale for each draw, like g_vScreenOffset.
+static std::unordered_map<void*, int> g_psRecip;   // pixel shader -> register of its screen reciprocal
+static int g_curPsRecip = -1;
+void StereoRegisterPS(void* shader, const DWORD* code) {
+    if (!shader || !code) return;
+    int reg = -1;
+    bool vpos = false;
+    for (size_t i = 1; i < 65536; ) {
+        DWORD t = code[i];
+        if (t == 0x0000FFFF) break;
+        if ((t & 0xFFFF) == 0xFFFE) {
+            DWORD len = (t >> 16) & 0x7FFF;
+            if (len >= 8 && code[i + 1] == 0x42415443 /*'CTAB'*/) {
+                const uint8_t* base = (const uint8_t*)&code[i + 2];
+                size_t size = (len - 1) * 4;
+                struct Hdr { DWORD Size, Creator, Version, Constants, ConstantInfo, Flags, Target; };
+                struct Info { DWORD Name; WORD RegisterSet, RegisterIndex, RegisterCount, Reserved; DWORD TypeInfo, DefaultValue; };
+                const Hdr* h = (const Hdr*)base;
+                if (h->ConstantInfo + h->Constants * sizeof(Info) <= size) {
+                    const Info* ci = (const Info*)(base + h->ConstantInfo);
+                    for (DWORD k = 0; k < h->Constants; ++k) {
+                        if (ci[k].Name >= size || ci[k].RegisterSet != 2 /*D3DXRS_FLOAT4*/ || ci[k].RegisterIndex >= 224) continue;
+                        const char* n = (const char*)base + ci[k].Name;
+                        if (!strcmp(n, "$s_screenReciprocal") || !strcmp(n, "screenSizeReciprocal") || !strcmp(n, "$screenSizeReciprocal"))
+                            reg = ci[k].RegisterIndex;
+                    }
+                }
+            }
+            i += 1 + len;
+            continue;
+        }
+        DWORD op = t & 0xFFFF, n = (t >> 24) & 0xF;
+        if (op == 0x1F && n >= 2) {   // dcl: is the destination vPos (misc type 17, index 0)?
+            DWORD d = code[i + 2];
+            DWORD type = ((d >> 28) & 7) | (((d >> 11) & 3) << 3);
+            if (type == 17 && (d & 0x7FF) == 0) vpos = true;
+        }
+        i += 1 + n;
+    }
+    AcquireSRWLockExclusive(&g_layoutLock);
+    if (reg >= 0 && vpos) g_psRecip[shader] = reg; else g_psRecip.erase(shader);
+    ReleaseSRWLockExclusive(&g_layoutLock);
+    static int logged = 0;
+    if (reg >= 0 && vpos && logged++ < 3) LOGI("stereo: pixel shader %p reads the screen at vPos * c%d (scaled per target)", shader, reg);
+}
+void StereoOnSetPS(void* shader) {
+    AcquireSRWLockShared(&g_layoutLock);
+    auto it = g_psRecip.find(shader);
+    g_curPsRecip = it != g_psRecip.end() ? it->second : -1;
+    ReleaseSRWLockShared(&g_layoutLock);
+}
+
 // ------------------------------------------------------------------ right-eye twins (native)
 // The twin is attached to the game's resource as IUnknown private data, so it lives exactly as long as the original.
 static const GUID kTwinGuid = {0x6a3c1f2e, 0x51b7, 0x4f0e, {0x9d, 0x2a, 0x13, 0x77, 0xc4, 0x08, 0xe1, 0x5b}};
@@ -571,7 +628,23 @@ bool StereoSceneCamera(float rot[3][3], long* frame, long eyeFrame[2]) {
 // Post-processing passes add a half-pixel offset (g_vScreenOffset, in clip units = 1/width) computed for the game's
 // resolution; on a scaled target it is divided by the scale so it stays half a pixel.
 static bool g_soPatched = false;
+static int g_psrPatched = -1;   // pixel shader register whose screen reciprocal is patched for this draw
+static bool PsRecipScaled(float out[4]) {
+    ScaleInfo si;
+    if (g_curPsRecip < 0 || !G().s.screenRecipFix || !RtRT0Scaled(&si)) return false;
+    memcpy(out, Sh().psc[g_curPsRecip], 16);
+    out[0] /= si.sx;
+    out[1] /= si.sy;
+    return true;
+}
 static void PatchScreenOffset(IDirect3DDevice9* dev) {
+    g_psrPatched = -1;
+    float r[4];
+    if (PsRecipScaled(r)) {
+        InternalScope in;
+        dev->SetPixelShaderConstantF(g_curPsRecip, r, 1);
+        g_psrPatched = g_curPsRecip;
+    }
     g_soPatched = false;
     ScaleInfo si;
     if (g_cur.so < 0 || !RtRT0Scaled(&si)) return;
@@ -645,6 +718,11 @@ int StereoPreDraw(IDirect3DDevice9* dev) {
 }
 
 void StereoPostDraw(IDirect3DDevice9* dev, int) {
+    if (g_psrPatched >= 0) {
+        InternalScope in;
+        dev->SetPixelShaderConstantF(g_psrPatched, Sh().psc[g_psrPatched], 1);
+        g_psrPatched = -1;
+    }
     if (g_soPatched) {
         g_soPatched = false;
         InternalScope in;
@@ -683,14 +761,20 @@ IDirect3DSurface9* StereoBoundDS() { return g_ds; }
 bool StereoClearWouldMirror() { return g_active && Native() && !g_uiPhase && g_sceneCopyLastFrame && (g_rtTwin[0] || g_dsTwin); }
 
 // The right eye's constants for the current draw (call between the game's draw and StereoPostDraw).
-int StereoRightPatches(StereoPatchReg out[4]) {
+int StereoRightPatches(StereoPatchReg out[kStereoMaxPatches]) {
     int n = 0;
     auto add = [&](int reg, int count, const float* right) {
         StereoPatchReg& p = out[n++];
-        p.reg = reg; p.count = count;
+        p.reg = reg; p.count = count; p.ps = 0;
         memcpy(p.right, right, count * 16);
         memcpy(p.game, Sh().vsc[reg], count * 16);
     };
+    if (g_psrPatched >= 0) {   // the screen reciprocal, as PatchScreenOffset set it
+        StereoPatchReg& p = out[n++];
+        p.reg = g_psrPatched; p.count = 1; p.ps = 1;
+        PsRecipScaled(p.right[0]);
+        memcpy(p.game, Sh().psc[g_psrPatched], 16);
+    }
     M4 WVP2, WV2, VIT2;
     if (g_cur.wvp >= 0 && (g_haveP || g_cur.local) && EyeMatrices(1, &WVP2, &WV2, &VIT2)) {
         add(g_cur.wvp, 4, &WVP2.m[0][0]);

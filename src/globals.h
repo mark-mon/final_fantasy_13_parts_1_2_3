@@ -37,6 +37,7 @@ struct Settings {
     bool lrDepthStereo = true;          // Lightning Returns: patch the scene depth pass (localProjection/ViewMatrix) per eye (t4)
     bool lrFlatUntilPlay = true;        // Lightning Returns: no stereo frames until gameplay is seen (start-up logo animation)
     bool lrStillUntilPlay = true;       // Lightning Returns: no head tracking until gameplay is seen (title screen crest)
+    bool screenRecipFix = true;         // pixel shaders reading the screen at vPos * screenSizeReciprocal: scale it per target (t11)
     bool lrClipFix = true;              // Lightning Returns: one clip-space eye correction for all patched draws (depth pre-pass match)
     // in-game settings menu (menu.cpp, vrkit)
     std::string menuChord = "l3r3";     // l3r3 | ltrt | none

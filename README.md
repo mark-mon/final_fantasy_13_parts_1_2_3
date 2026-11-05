@@ -22,7 +22,7 @@ program code.
 
 ## Install
 
-1. Download `FF13VR_v1.0.zip` from the [Releases](../../releases) page.
+1. Download `FF13VR_v1.1.zip` from the [Releases](../../releases) page.
 2. Copy `d3d9.dll`, `XrBridgeHost.exe` and `config.txt` next to the game's exe:
 
    | Game | Folder (inside `steamapps\common`) |
@@ -72,6 +72,7 @@ Lightning Returns only (all default to `1`; set one to `0` only to compare):
 | `lr_depth_stereo` | Renders the scene depth pass per eye. |
 | `lr_flat_until_play` | Keeps the real-time logo animation after the opening movie on the flat screen. |
 | `lr_still_until_play` | Keeps the title screen still (no head tracking before gameplay). |
+| `screen_recip_fix` | Fixes effects that read the screen at the game's own resolution (the view squeezed into a corner with streaks in fog areas). Applies to all three games. |
 
 Logs go to `FF13VR\ff13vr.log` (and `xrhost.log`) next to the game exe. Please attach both when reporting a problem.
 

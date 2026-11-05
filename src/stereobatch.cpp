@@ -183,7 +183,7 @@ static UINT VertexCount(D3DPRIMITIVETYPE t, UINT pc) {
 
 void BatchRecordDraw(IDirect3DDevice9* dev, const BatchDraw& d) {
     if (!g_open) Open();
-    StereoPatchReg patch[4];
+    StereoPatchReg patch[kStereoMaxPatches];
     int np = StereoRightPatches(patch);
     Op o{OP_DRAW, (DWORD)d.kind, (DWORD)d.type, d.a, d.b, d.c, d.d, nullptr, 0, 0};
     o.off = (uint32_t)g_data.size();
@@ -273,7 +273,9 @@ static void ReplayDraw(IDirect3DDevice9* dev, const Op& o) {
     memcpy(&np, p, 4); p += 4;
     const StereoPatchReg* patch = (const StereoPatchReg*)p;
     p += np * sizeof(StereoPatchReg);
-    for (uint32_t i = 0; i < np; ++i) dev->SetVertexShaderConstantF(patch[i].reg, &patch[i].right[0][0], patch[i].count);
+    for (uint32_t i = 0; i < np; ++i)
+        if (patch[i].ps) dev->SetPixelShaderConstantF(patch[i].reg, &patch[i].right[0][0], patch[i].count);
+        else dev->SetVertexShaderConstantF(patch[i].reg, &patch[i].right[0][0], patch[i].count);
     D3DPRIMITIVETYPE t = (D3DPRIMITIVETYPE)o.b;
     switch (o.a) {
     case 0: dev->DrawPrimitive(t, o.c, o.d); break;
@@ -292,7 +294,9 @@ static void ReplayDraw(IDirect3DDevice9* dev, const Op& o) {
         break;
     }
     }
-    for (uint32_t i = 0; i < np; ++i) dev->SetVertexShaderConstantF(patch[i].reg, &patch[i].game[0][0], patch[i].count);
+    for (uint32_t i = 0; i < np; ++i)
+        if (patch[i].ps) dev->SetPixelShaderConstantF(patch[i].reg, &patch[i].game[0][0], patch[i].count);
+        else dev->SetVertexShaderConstantF(patch[i].reg, &patch[i].game[0][0], patch[i].count);
 }
 
 static unsigned g_stReason[BF_COUNT] = {};

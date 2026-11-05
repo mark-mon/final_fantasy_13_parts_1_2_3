@@ -17,6 +17,8 @@ namespace fvr {
 
 void StereoRegisterVS(void* shader, const DWORD* bytecode);   // parses the constant table
 void StereoOnSetVS(void* shader);
+void StereoRegisterPS(void* shader, const DWORD* bytecode);   // screen-size reciprocal used with vPos (screen_recip_fix)
+void StereoOnSetPS(void* shader);
 void StereoOnSetRT(IDirect3DDevice9* dev, DWORD index, IDirect3DSurface9* s);
 void StereoOnSetDS(IDirect3DSurface9* s);
 void StereoOnSetTexture(DWORD stage, IDirect3DBaseTexture9* t);
@@ -62,8 +64,9 @@ void StereoCameraPos(float out[3]);   // world position of the game camera (last
 // the game frame each eye image comes from (AER: one of them is a frame older). False before the first scene.
 bool StereoSceneCamera(float rot[3][3], long* frame, long eyeFrame[2]);
 // Native, batched (stereobatch.cpp).
-struct StereoPatchReg { int reg, count; float right[4][4]; float game[4][4]; };
-int StereoRightPatches(StereoPatchReg out[4]);                       // right-eye constants of the current draw
+struct StereoPatchReg { int reg, count, ps; float right[4][4]; float game[4][4]; };   // ps: pixel shader constant
+enum { kStereoMaxPatches = 6 };
+int StereoRightPatches(StereoPatchReg out[kStereoMaxPatches]);                       // right-eye constants of the current draw
 void StereoBindPassTargets(IDirect3DDevice9* dev, bool right);       // the pass's targets: right-eye twins or the game's
 IDirect3DBaseTexture9* StereoTwinTexture(IDirect3DBaseTexture9* t);  // right-eye twin of a texture, or null
 void StereoNoteRightDraws(unsigned n);

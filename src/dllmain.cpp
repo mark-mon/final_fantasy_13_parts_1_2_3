@@ -149,6 +149,7 @@ static void LoadSettings() {
     s.nativeBatch = c.GetBool("native_batch", true);
     s.lrDepthStereo = c.GetBool("lr_depth_stereo", true);
     s.lrClipFix = c.GetBool("lr_clip_fix", true);
+    s.screenRecipFix = c.GetBool("screen_recip_fix", true);
     s.lrFlatUntilPlay = c.GetBool("lr_flat_until_play", true);
     s.lrStillUntilPlay = c.GetBool("lr_still_until_play", true);
     s.menuChord = c.GetStr("menu_chord", "l3r3");

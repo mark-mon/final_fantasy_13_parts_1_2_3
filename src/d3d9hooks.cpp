@@ -1184,10 +1184,15 @@ static void BeforeReset(D3DPRESENT_PARAMETERS* pp) {
     StereoOnReset();
     if (pp && !pp->Windowed && G().s.forceWindowed) MakeWindowed(pp, pp->hDeviceWindow ? pp->hDeviceWindow : g_devWnd);
 }
+static bool g_sizeAfterReset = false;
 static void AfterReset(const D3DPRESENT_PARAMETERS* pp, HRESULT hr) {
     // a new back-buffer size: decide the 3D resolution again (the game recreates its targets after a reset)
     if (SUCCEEDED(hr) && pp && pp->BackBufferWidth > 16 && (pp->BackBufferWidth != RtBaseW() || pp->BackBufferHeight != RtBaseH()))
         RtScaleInit(pp->BackBufferWidth, pp->BackBufferHeight);
+    // Lightning Returns renders at its own resolution setting (Configuration.ini Graphics_Resolution), which is not
+    // the window's size when the window doesn't fit the desktop (dev PC: 3840x2160 targets, 3014x1695 window). The
+    // first 16:9 render target it creates after the reset decides the game resolution (MaybeSizeFromTarget).
+    if (SUCCEEDED(hr) && G().game == GAME_LR) g_sizeAfterReset = true;
 }
 
 static HRESULT STDMETHODCALLTYPE Hk_Reset(IDirect3DDevice9* self, D3DPRESENT_PARAMETERS* pp) {
@@ -1250,6 +1255,14 @@ static HRESULT CreateTextureImpl(IDirect3DDevice9* self, UINT w, UINT h, UINT lv
 // the real size: the first big render target gives the game resolution.
 static bool g_sizeFromFirstTarget = false;
 static void MaybeSizeFromTarget(UINT w, UINT h) {
+    if (g_sizeAfterReset && !InternalCall() && w >= 640 && h >= 360 && (UINT)abs((int)(w * 9) - (int)(h * 16)) <= 16) {
+        g_sizeAfterReset = false;
+        if (w != RtBaseW() || h != RtBaseH()) {
+            LOGI("game resolution %ux%u from its first full-size render target after the reset (back buffer %ux%u)", w, h, RtBaseW(), RtBaseH());
+            RtScaleInit(w, h);
+        }
+        return;
+    }
     if (!g_sizeFromFirstTarget || InternalCall() || w < 640 || h < 360) return;
     g_sizeFromFirstTarget = false;
     LOGI("game resolution %ux%u from its first full-size render target", w, h);
@@ -1693,7 +1706,7 @@ static HRESULT STDMETHODCALLTYPE Hk_CreateVertexShader(IDirect3DDevice9* self, c
 }
 static HRESULT STDMETHODCALLTYPE Hk_CreatePixelShader(IDirect3DDevice9* self, const DWORD* fn, IDirect3DPixelShader9** out) {
     HRESULT hr = o_CreatePixelShader(self, fn, out);
-    if (SUCCEEDED(hr) && out && *out && !InternalCall()) RegisterShader(*out, true, fn);
+    if (SUCCEEDED(hr) && out && *out && !InternalCall()) { RegisterShader(*out, true, fn); StereoRegisterPS(*out, fn); }
     return hr;
 }
 static HRESULT STDMETHODCALLTYPE Hk_SetVertexShader(IDirect3DDevice9* self, IDirect3DVertexShader9* s) {
@@ -1706,6 +1719,7 @@ static HRESULT STDMETHODCALLTYPE Hk_SetVertexShader(IDirect3DDevice9* self, IDir
 }
 static HRESULT STDMETHODCALLTYPE Hk_SetPixelShader(IDirect3DDevice9* self, IDirect3DPixelShader9* s) {
     if (!InternalCall()) {
+        StereoOnSetPS(s);
         BsPixelShader(s);
         if (Capturing()) { Internal in; CapShader(true, s); }
     }
