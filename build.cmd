@@ -22,7 +22,7 @@ cl /nologo /LD /O2 /Oy- /Zi /MT /EHsc /W3 /std:c++17 /arch:SSE2 /utf-8 ^
    /D_CRT_SECURE_NO_WARNINGS /DNOMINMAX ^
    /Isrc /I%XRB%\include /I%XRB%\src\common /I%XRB%\third_party\minhook\include /I%VK% /I%IMGUI% ^
    /Fobuild\ /Fdbuild\vc.pdb /Fedist\d3d9.dll ^
-   src\dllmain.cpp src\d3d9hooks.cpp src\capture.cpp src\stereo.cpp src\stereobatch.cpp src\pacing.cpp src\rtscale.cpp src\camfov.cpp src\imageio.cpp src\input.cpp src\menu.cpp src\hookutil.cpp src\vtbl.c ^
+   src\dllmain.cpp src\d3d9hooks.cpp src\capture.cpp src\stereo.cpp src\stereobatch.cpp src\pacing.cpp src\rtscale.cpp src\camfov.cpp src\imageio.cpp src\input.cpp src\menu.cpp src\hookutil.cpp src\diag.cpp src\vtbl.c ^
    %VK%\vrkit_options.cpp %VK%\vrkit_input.cpp %VK%\vrkit_menu_core.cpp %VK%\vrkit_menu_d3d9.cpp ^
    %IMGUI%\imgui.cpp %IMGUI%\imgui_draw.cpp %IMGUI%\imgui_tables.cpp %IMGUI%\imgui_widgets.cpp ^
    %XRB%\src\client\client.cpp %XRB%\src\client\ring_d3d9.cpp %XRB%\src\common\log.cpp %XRB%\src\common\config.cpp ^

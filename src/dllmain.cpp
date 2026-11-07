@@ -150,6 +150,8 @@ static void LoadSettings() {
     s.lrDepthStereo = c.GetBool("lr_depth_stereo", true);
     s.lrClipFix = c.GetBool("lr_clip_fix", true);
     s.screenRecipFix = c.GetBool("screen_recip_fix", true);
+    s.earlyHooks = c.GetBool("early_hooks", true);
+    s.startupDiag = c.GetBool("startup_diag", true);
     s.lrFlatUntilPlay = c.GetBool("lr_flat_until_play", true);
     s.lrStillUntilPlay = c.GetBool("lr_still_until_play", true);
     s.menuChord = c.GetStr("menu_chord", "l3r3");
@@ -223,10 +225,23 @@ PASSTHRU(D3DPERF_SetMarker) PASSTHRU(D3DPERF_SetOptions) PASSTHRU(D3DPERF_SetReg
 PASSTHRU(DebugSetMute) PASSTHRU(Direct3D9EnableMaximizedWindowedModeShim) PASSTHRU(Direct3DShaderValidatorCreate9)
 PASSTHRU(PSGPError) PASSTHRU(PSGPSampleTexture) PASSTHRU(Direct3DCreate9On12) PASSTHRU(Direct3DCreate9On12Ex)
 
+static LONG CALLBACK CrashHandler(PEXCEPTION_POINTERS ep);
+void DiagStartup();
+void DiagGraphicsStarted();
+void DiagExit();
+static void LateHooks() {
+    static bool once = false;
+    if (once || G().s.earlyHooks) return;
+    once = true;
+    AddVectoredExceptionHandler(0, CrashHandler);
+}
+
 extern "C" HRESULT WINAPI Proxy_Direct3DCreate9Ex(UINT sdk, IDirect3D9Ex** out) {
     typedef HRESULT(WINAPI * F)(UINT, IDirect3D9Ex**);
     static F f = (F)RealD3D9Proc("Direct3DCreate9Ex");
     LOGI("Direct3DCreate9Ex(%u) called by the game", sdk);
+    DiagGraphicsStarted();
+    LateHooks();
     OnGameStartingGraphics();   // first D3D use by the game
     SetGameNativeEx();          // it wants Ex itself: don't hide the Ex interfaces from it
     HRESULT hr = f ? f(sdk, out) : E_FAIL;
@@ -236,6 +251,8 @@ extern "C" HRESULT WINAPI Proxy_Direct3DCreate9Ex(UINT sdk, IDirect3D9Ex** out) 
 
 extern "C" IDirect3D9* WINAPI Proxy_Direct3DCreate9(UINT sdk) {
     LOGI("Direct3DCreate9(%u) called by the game", sdk);
+    DiagGraphicsStarted();
+    LateHooks();
     OnGameStartingGraphics();   // first D3D use by the game
     if (G().s.upgradeToEx) {
         typedef HRESULT(WINAPI * FEx)(UINT, IDirect3D9Ex**);
@@ -349,9 +366,13 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(h);
         Init();
-        AddVectoredExceptionHandler(0, CrashHandler);
-        InstallInputHooks();   // dinput8 is a static import of the game: already mapped, safe to detour
+        DiagStartup();
+        if (G().s.earlyHooks) {
+            AddVectoredExceptionHandler(0, CrashHandler);
+            InstallInputHooks();   // dinput8 is a static import of the game: already mapped, safe to detour
+        } else LOGI("early_hooks = 0: crash handler and input hooks wait for the game's first D3D call");
     } else if (reason == DLL_PROCESS_DETACH) {
+        DiagExit();
         xrb::ClientShutdown();
         LOGI("Unloading");
         xrb::LogFlush();
