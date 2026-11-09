@@ -149,6 +149,7 @@ static void LoadSettings() {
     s.nativeBatch = c.GetBool("native_batch", true);
     s.lrDepthStereo = c.GetBool("lr_depth_stereo", true);
     s.lrClipFix = c.GetBool("lr_clip_fix", true);
+    s.lrViewFix = c.GetBool("lr_view_fix", true);
     s.screenRecipFix = c.GetBool("screen_recip_fix", true);
     s.earlyHooks = c.GetBool("early_hooks", true);
     s.startupDiag = c.GetBool("startup_diag", true);

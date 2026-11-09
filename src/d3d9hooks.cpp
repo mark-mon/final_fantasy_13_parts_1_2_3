@@ -1700,8 +1700,15 @@ static HRESULT STDMETHODCALLTYPE Hk_StretchRect(IDirect3DDevice9* self, IDirect3
 }
 
 static HRESULT STDMETHODCALLTYPE Hk_CreateVertexShader(IDirect3DDevice9* self, const DWORD* fn, IDirect3DVertexShader9** out) {
-    HRESULT hr = o_CreateVertexShader(self, fn, out);
-    if (SUCCEEDED(hr) && out && *out && !InternalCall()) { RegisterShader(*out, false, fn); StereoRegisterVS(*out, fn); }
+    std::vector<DWORD> patched;
+    bool ray = !InternalCall() && fn && StereoPatchVSCode(fn, &patched);
+    HRESULT hr = o_CreateVertexShader(self, ray ? patched.data() : fn, out);
+    if (ray && FAILED(hr)) {
+        LOGW("stereo: patched vertex shader rejected (0x%08lX) - created unchanged", (unsigned long)hr);
+        ray = false;
+        hr = o_CreateVertexShader(self, fn, out);
+    }
+    if (SUCCEEDED(hr) && out && *out && !InternalCall()) { RegisterShader(*out, false, fn); StereoRegisterVS(*out, fn, ray); }
     return hr;
 }
 static HRESULT STDMETHODCALLTYPE Hk_CreatePixelShader(IDirect3DDevice9* self, const DWORD* fn, IDirect3DPixelShader9** out) {

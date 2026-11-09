@@ -16,6 +16,8 @@
 #include <unordered_map>
 #include <cmath>
 #include <cstring>
+#include <string>
+#include <vector>
 
 namespace fvr {
 
@@ -58,7 +60,7 @@ static M4 Load(int reg) { M4 r; memcpy(r.m, Sh().vsc[reg], sizeof(r.m)); return 
 // worldMatrix (w) and a 3-row viewITMatrix: there WV = W * V with V = inverse(transpose(VIT)). Its scene depth pass (the
 // R32F target its lighting and fog read) uses localProjectionMatrix (= WVP) + localViewMatrix (= WV) and no
 // viewITMatrix (vit < 0); its shadow maps use localProjectionMatrix alone (the light's camera: not patched).
-struct Layout { int wvp = -1, wv = -1, vit = -1, w = -1, vitN = 4, so = -1; bool local = false; };   // local: localProjection/ViewMatrix   // so: g_vScreenOffset (post-processing half-pixel offset)
+struct Layout { int wvp = -1, wv = -1, vit = -1, w = -1, vitN = 4, so = -1, pr = -1; bool local = false; };   // pr: $s_projectionReciprocal with the c255 ray offset (lr_view_fix)   // local: localProjection/ViewMatrix   // so: g_vScreenOffset (post-processing half-pixel offset)
 static std::unordered_map<void*, Layout> g_layouts;
 static SRWLOCK g_layoutLock = SRWLOCK_INIT;
 static Layout g_cur;             // layout of the current vertex shader (wvp < 0: not patchable)
@@ -77,9 +79,97 @@ static M4 LoadWV() {
     return Mul(Load(g_cur.w), V);
 }
 
-void StereoRegisterVS(void* shader, const DWORD* code) {
+// Register of a float constant by name in a shader's constant table (-1: none).
+static int FindConstant(const DWORD* code, const char* name) {
+    for (size_t i = 1; i < 65536; ) {
+        DWORD t = code[i];
+        if (t == 0x0000FFFF) break;
+        if ((t & 0xFFFF) == 0xFFFE) {
+            DWORD len = (t >> 16) & 0x7FFF;
+            if (len >= 8 && code[i + 1] == 0x42415443 /*'CTAB'*/) {
+                const uint8_t* base = (const uint8_t*)&code[i + 2];
+                size_t size = (len - 1) * 4;
+                struct Hdr { DWORD Size, Creator, Version, Constants, ConstantInfo, Flags, Target; };
+                struct Info { DWORD Name; WORD RegisterSet, RegisterIndex, RegisterCount, Reserved; DWORD TypeInfo, DefaultValue; };
+                const Hdr* h = (const Hdr*)base;
+                if (h->ConstantInfo + h->Constants * sizeof(Info) > size) return -1;
+                const Info* ci = (const Info*)(base + h->ConstantInfo);
+                for (DWORD k = 0; k < h->Constants; ++k)
+                    if (ci[k].Name < size && ci[k].RegisterSet == 2 && !strcmp((const char*)base + ci[k].Name, name)) return ci[k].RegisterIndex;
+                return -1;
+            }
+            i += 1 + len;
+        } else i += 1 + ((t >> 24) & 0xF);
+    }
+    return -1;
+}
+
+// ------------------------------------------------------------------ view rays (Lightning Returns, lr_view_fix)
+// Its screen-space shadow pass and the characters' blob shadows rebuild each pixel's view-space position from the
+// linear depth buffer: the vertex shader makes a ray (ndc.x, ndc.y, 1) * $s_projectionReciprocal, i.e. a symmetric
+// frustum with the game's FOV, and the pixel shader takes ray * depth. The depth is the eye's (patched camera), so
+// the ray must be the eye's too: its frustum is asymmetric, which needs an offset - one instruction changes from
+// "mul oN, rM, c_pr" to "mul r31, rM, c_pr; add oN, r31, c255"; c255 = (P20/P00, P21/P11, 0, 0) of the eye projection, 0 otherwise.
+// Without it the shadows were placed from the game camera's point of view: they moved with the head (user, t11).
+static const int kRayOffsetReg = 255, kRayTemp = 31;   // c255: the offset; r31: scratch (vs_3_0 has r0..r31)
+bool StereoPatchVSCode(const DWORD* code, std::vector<DWORD>* out) {
+    if (G().game != GAME_LR || !G().s.lrViewFix || !code || (code[0] & 0xFFFF0000) != 0xFFFE0000) return false;
+    int pr = FindConstant(code, "$s_projectionReciprocal");
+    if (pr < 0) return false;
+    out->clear();
+    out->push_back(code[0]);
+    int patched = 0;
+    // r31 must be free: look for any temp register 31 in the instructions
+    for (size_t j = 1; j < 65536; ) {
+        DWORD t = code[j];
+        if (t == 0x0000FFFF) break;
+        DWORD n = (t & 0xFFFF) == 0xFFFE ? (t >> 16) & 0x7FFF : (t >> 24) & 0xF;
+        if ((t & 0xFFFF) != 0xFFFE)
+            for (DWORD k = 1; k <= n; ++k) {
+                DWORD p = code[j + k];
+                if ((p & 0x80000000) && ((p >> 28) & 7) == 0 && ((p >> 11) & 3) == 0 && (p & 0x7FF) == (DWORD)kRayTemp) return false;
+            }
+        j += 1 + n;
+    }
+    size_t i = 1;
+    for (; i < 65536; ) {
+        DWORD t = code[i];
+        if (t == 0x0000FFFF) { out->push_back(t); break; }
+        DWORD n = (t & 0xFFFF) == 0xFFFE ? (t >> 16) & 0x7FFF : (t >> 24) & 0xF;
+        if ((t & 0xFFFF) == 0x0005 && n == 3) {   // mul dst, a, b
+            DWORD d = code[i + 1], a = code[i + 2], b = code[i + 3];
+            auto type = [](DWORD p) { return ((p >> 28) & 7) | (((p >> 11) & 3) << 3); };
+            auto isPr = [&](DWORD p) { return type(p) == 2 && (p & 0x7FF) == (DWORD)pr && !(p & 0x2000); };
+            bool outXY = type(d) == 6 && ((d >> 16) & 3) == 3;   // output register, writes .xy
+            if (outXY && ((isPr(b) && type(a) == 0) || (isPr(a) && type(b) == 0))) {
+                // one constant register per instruction (the runtime rejected "mad o, r, c1, c255"), so:
+                //   mul r31.<mask>, a, b      add o.<mask>, r31, c255
+                DWORD mask = d & 0x000F0000;
+                out->push_back((t & 0xF0FF0000) | 0x0005 | (3u << 24));
+                out->push_back(0x80000000u | mask | (DWORD)kRayTemp);   // r31.<mask>
+                out->push_back(a); out->push_back(b);
+                out->push_back((t & 0xF0FF0000) | 0x0002 | (3u << 24));   // add
+                out->push_back(d);
+                out->push_back(0x80000000u | (0xE4u << 16) | (DWORD)kRayTemp);                        // r31.xyzw
+                out->push_back(0x80000000u | (2u << 28) | (0xE4u << 16) | (DWORD)kRayOffsetReg);   // c255.xyzw
+                patched++;
+                i += 4;
+                continue;
+            }
+        }
+        for (DWORD k = 0; k <= n; ++k) out->push_back(code[i + k]);
+        i += 1 + n;
+    }
+    if (!patched || out->back() != 0x0000FFFF) { out->clear(); return false; }
+    static int logged = 0;
+    if (logged++ < 8) LOGI("stereo: view-ray vertex shader (projectionReciprocal c%d): %d instruction(s) get the eye offset c%d", pr, patched, kRayOffsetReg);
+    return true;
+}
+
+void StereoRegisterVS(void* shader, const DWORD* code, bool rayOffset) {
     if (!shader || !code) return;
     Layout L;
+    if (rayOffset) L.pr = FindConstant(code, "$s_projectionReciprocal");
     int lp = -1, lv = -1;   // localProjectionMatrix / localViewMatrix
     // walk the token stream to the CTAB comment block
     for (size_t i = 1; i < 65536; ) {
@@ -104,8 +194,8 @@ void StereoRegisterVS(void* shader, const DWORD* code) {
                         if (!strcmp(n, "worldViewProjMatrix")) L.wvp = ci[k].RegisterIndex;
                         else if (!strcmp(n, "worldViewMatrix")) L.wv = ci[k].RegisterIndex;
                         else if (!strcmp(n, "worldMatrix")) L.w = ci[k].RegisterIndex;
-                        else if (!strcmp(n, "localProjectionMatrix")) lp = ci[k].RegisterIndex;
-                        else if (!strcmp(n, "localViewMatrix")) lv = ci[k].RegisterIndex;
+                        else if (!strcmp(n, "localProjectionMatrix") || !strcmp(n, "$s_worldProjectionMatrix")) lp = ci[k].RegisterIndex;
+                        else if (!strcmp(n, "localViewMatrix") || !strcmp(n, "$s_worldViewMatrix")) lv = ci[k].RegisterIndex;
                     }
                 }
                 break;
@@ -117,9 +207,9 @@ void StereoRegisterVS(void* shader, const DWORD* code) {
     if (G().game == GAME_LR && L.wvp < 0 && lp >= 0 && lv >= 0) { L.wvp = lp; L.wv = lv; L.vit = -1; L.local = true; }
     bool ok = L.wvp >= 0 && (L.wv >= 0 || (L.w >= 0 && L.vit >= 0)) && L.wvp + 4 <= 256 && (L.vit < 0 || L.vit + L.vitN <= 256) &&
               (L.wv < 0 || L.wv + 4 <= 256) && (L.w < 0 || L.w + 4 <= 256);
-    if (!ok) { int so = L.so; L = Layout(); L.so = so; }
+    if (!ok) { int so = L.so, pr = L.pr; L = Layout(); L.so = so; L.pr = pr; }
     AcquireSRWLockExclusive(&g_layoutLock);
-    if (ok || L.so >= 0) g_layouts[shader] = L; else g_layouts.erase(shader);
+    if (ok || L.so >= 0 || L.pr >= 0) g_layouts[shader] = L; else g_layouts.erase(shader);
     ReleaseSRWLockExclusive(&g_layoutLock);
 }
 
@@ -138,9 +228,17 @@ void StereoOnSetVS(void* shader) {
 // target's scale for each draw, like g_vScreenOffset.
 static std::unordered_map<void*, int> g_psRecip;   // pixel shader -> register of its screen reciprocal
 static int g_curPsRecip = -1;
+// Lightning Returns' screen-space shadow pass maps the rebuilt view-space position to shadow space with matrices given
+// as 4 column registers ($s_viewShadowMatrixNearColumn0..3, ...Far...). They expect the game camera's view space; per
+// eye each column c becomes Einv * c (lr_view_fix).
+struct PsView { int n = 0; int col[4][4]; };   // up to 4 matrices of 4 column registers
+static std::unordered_map<void*, PsView> g_psView;
+static PsView g_curPsView;
 void StereoRegisterPS(void* shader, const DWORD* code) {
     if (!shader || !code) return;
     int reg = -1;
+    PsView pv;
+    std::vector<std::string> viewNames;
     bool vpos = false;
     for (size_t i = 1; i < 65536; ) {
         DWORD t = code[i];
@@ -160,6 +258,16 @@ void StereoRegisterPS(void* shader, const DWORD* code) {
                         const char* n = (const char*)base + ci[k].Name;
                         if (!strcmp(n, "$s_screenReciprocal") || !strcmp(n, "screenSizeReciprocal") || !strcmp(n, "$screenSizeReciprocal"))
                             reg = ci[k].RegisterIndex;
+                        // "$s_view<name>Column<k>" (k = 0..3): one column of a view-space matrix
+                        size_t ln = strlen(n);
+                        if (G().game == GAME_LR && ln > 15 && !strncmp(n, "$s_view", 7) && !strncmp(n + ln - 7, "Column", 6) && n[ln - 1] >= '0' &&
+                            n[ln - 1] <= '3' && ci[k].RegisterCount == 1) {
+                            std::string key(n, ln - 7);
+                            int m = -1;
+                            for (int g = 0; g < (int)viewNames.size(); ++g) if (viewNames[g] == key) m = g;
+                            if (m < 0 && viewNames.size() < 4) { m = (int)viewNames.size(); viewNames.push_back(key); for (int c = 0; c < 4; ++c) pv.col[m][c] = -1; }
+                            if (m >= 0) pv.col[m][n[ln - 1] - '0'] = ci[k].RegisterIndex;
+                        }
                     }
                 }
             }
@@ -174,9 +282,17 @@ void StereoRegisterPS(void* shader, const DWORD* code) {
         }
         i += 1 + n;
     }
+    for (int g = 0; g < (int)viewNames.size(); ++g) {
+        bool full = true;
+        for (int c = 0; c < 4; ++c) full = full && pv.col[g][c] >= 0;
+        if (full) { if (g != pv.n) memcpy(pv.col[pv.n], pv.col[g], sizeof(pv.col[g])); pv.n++; }
+    }
     AcquireSRWLockExclusive(&g_layoutLock);
     if (reg >= 0 && vpos) g_psRecip[shader] = reg; else g_psRecip.erase(shader);
+    if (pv.n > 0) g_psView[shader] = pv; else g_psView.erase(shader);
     ReleaseSRWLockExclusive(&g_layoutLock);
+    static int loggedView = 0;
+    if (pv.n > 0 && loggedView++ < 4) LOGI("stereo: pixel shader %p has %d view-space matrix(es) (first at c%d; transformed per eye)", shader, pv.n, pv.col[0][0]);
     static int logged = 0;
     if (reg >= 0 && vpos && logged++ < 3) LOGI("stereo: pixel shader %p reads the screen at vPos * c%d (scaled per target)", shader, reg);
 }
@@ -184,6 +300,8 @@ void StereoOnSetPS(void* shader) {
     AcquireSRWLockShared(&g_layoutLock);
     auto it = g_psRecip.find(shader);
     g_curPsRecip = it != g_psRecip.end() ? it->second : -1;
+    auto iv = g_psView.find(shader);
+    g_curPsView = iv != g_psView.end() ? iv->second : PsView();
     ReleaseSRWLockShared(&g_layoutLock);
 }
 
@@ -609,6 +727,65 @@ static void Patch(IDirect3DDevice9* dev, int eye) {
     g_didPatch = true;
 }
 
+// ---- view-space reconstruction (lr_view_fix): eye values of the view ray and of the pixel shader's view matrices
+// The eye projection is the one the patched draws use: the latest main-scene projection with the eye FOV (the depth
+// pre-pass and this pass come before the frame's first main-scene draw, see EnsureClipCorrection).
+static bool ViewFixOn() { return G().game == GAME_LR && G().s.lrViewFix && !LrStill() && g_havePg; }
+// $s_projectionReciprocal and the c255 offset for the eye; false when the draw's ray is not the main camera's
+static bool RayValues(int eye, float pr[4], float off[4]) {
+    if (g_cur.pr < 0 || !ViewFixOn() || g_gameP00 == 0 || g_gameP11 == 0) return false;
+    const float* g = Sh().vsc[g_cur.pr];
+    if (fabsf(g[0] * g_gameP00 - 1) > 0.03f || fabsf(g[1] * g_gameP11 - 1) > 0.03f) return false;
+    M4 P = g_Pg;
+    EyeFov(&P, eye);
+    pr[0] = 1 / P.m[0][0]; pr[1] = 1 / P.m[1][1]; pr[2] = g[2]; pr[3] = g[3];
+    off[0] = P.m[2][0] / P.m[0][0]; off[1] = P.m[2][1] / P.m[1][1]; off[2] = off[3] = 0;
+    return true;
+}
+// one view-space matrix (4 column registers) for the eye: c' = Einv * c
+static void ViewColumns(int eye, int m, float out[4][4]) {
+    const M4& Ei = g_Einv[eye];
+    for (int c = 0; c < 4; ++c) {
+        const float* col = Sh().psc[g_curPsView.col[m][c]];
+        for (int i = 0; i < 4; ++i) out[c][i] = Ei.m[i][0] * col[0] + Ei.m[i][1] * col[1] + Ei.m[i][2] * col[2] + Ei.m[i][3] * col[3];
+    }
+}
+static bool g_rayPatched = false, g_psViewPatched = false;
+static unsigned g_statRay = 0, g_statPsView = 0;
+static void PatchView(IDirect3DDevice9* dev, int eye) {
+    float pr[4], off[4];
+    InternalScope in;
+    if (RayValues(eye, pr, off)) {
+        dev->SetVertexShaderConstantF(g_cur.pr, pr, 1);
+        dev->SetVertexShaderConstantF(kRayOffsetReg, off, 1);
+        g_rayPatched = true;
+        if (eye == 0) g_statRay++;
+    }
+    if (g_curPsView.n > 0 && ViewFixOn()) {
+        for (int m = 0; m < g_curPsView.n; ++m) {
+            float cols[4][4];
+            ViewColumns(eye, m, cols);
+            for (int c = 0; c < 4; ++c) dev->SetPixelShaderConstantF(g_curPsView.col[m][c], cols[c], 1);
+        }
+        g_psViewPatched = true;
+        if (eye == 0) g_statPsView++;
+    }
+}
+static void RestoreView(IDirect3DDevice9* dev) {
+    InternalScope in;
+    if (g_rayPatched) {
+        static const float zero[4] = {};
+        dev->SetVertexShaderConstantF(g_cur.pr, Sh().vsc[g_cur.pr], 1);
+        dev->SetVertexShaderConstantF(kRayOffsetReg, zero, 1);
+        g_rayPatched = false;
+    }
+    if (g_psViewPatched) {
+        for (int m = 0; m < g_curPsView.n; ++m)
+            for (int c = 0; c < 4; ++c) dev->SetPixelShaderConstantF(g_curPsView.col[m][c], Sh().psc[g_curPsView.col[m][c]], 1);
+        g_psViewPatched = false;
+    }
+}
+
 // Camera world position of the last main-scene 3D draw (inverse(V) = transpose(VIT): translation = VIT column 3).
 static float g_camPos[3] = {};
 void StereoCameraPos(float out[3]) { memcpy(out, g_camPos, sizeof(g_camPos)); }
@@ -707,6 +884,7 @@ int StereoPreDraw(IDirect3DDevice9* dev) {
         if (!g_rtTwin[0]) return SD_NONE;            // shared (eye-independent) target, e.g. a shadow map
         Patch(dev, 0);
         if (g_didPatch) g_patched++;
+        PatchView(dev, 0);
         return SD_NATIVE;
     }
     UINT sw = RtScaleActive() ? RtSceneW() : g_bbW, sh = RtScaleActive() ? RtSceneH() : g_bbH;
@@ -718,6 +896,7 @@ int StereoPreDraw(IDirect3DDevice9* dev) {
 }
 
 void StereoPostDraw(IDirect3DDevice9* dev, int) {
+    if (g_rayPatched || g_psViewPatched) RestoreView(dev);
     if (g_psrPatched >= 0) {
         InternalScope in;
         dev->SetPixelShaderConstantF(g_psrPatched, Sh().psc[g_psrPatched], 1);
@@ -781,6 +960,25 @@ int StereoRightPatches(StereoPatchReg out[kStereoMaxPatches]) {
         if (g_cur.wv >= 0) add(g_cur.wv, 4, &WV2.m[0][0]);
         if (g_cur.vit >= 0) add(g_cur.vit, g_cur.vitN, &VIT2.m[0][0]);
     }
+    float pr[4], off[4];
+    if (g_rayPatched && RayValues(1, pr, off)) {   // view ray (lr_view_fix)
+        add(g_cur.pr, 1, pr);
+        StereoPatchReg& p = out[n++];
+        p.reg = kRayOffsetReg; p.count = 1; p.ps = 0;
+        memcpy(p.right[0], off, 16);
+        memset(p.game[0], 0, 16);
+    }
+    if (g_psViewPatched)
+        for (int m = 0; m < g_curPsView.n && n + 4 <= kStereoMaxPatches; ++m) {
+            float cols[4][4];
+            ViewColumns(1, m, cols);
+            for (int c = 0; c < 4; ++c) {
+                StereoPatchReg& p = out[n++];
+                p.reg = g_curPsView.col[m][c]; p.count = 1; p.ps = 1;
+                memcpy(p.right[0], cols[c], 16);
+                memcpy(p.game[0], Sh().psc[p.reg], 16);
+            }
+        }
     ScaleInfo si;
     if (g_soPatched && g_cur.so >= 0 && RtRT0Scaled(&si)) {   // the half-pixel offset, as PatchScreenOffset set it
         float ab[2][4];
@@ -808,6 +1006,7 @@ bool StereoRightBegin(IDirect3DDevice9* dev) {
         Patch(dev, 1);
         g_didPatch = keep || g_didPatch;
     }
+    if (g_rayPatched || g_psViewPatched) PatchView(dev, 1);
     g_rightDraws++;
     return true;
 }

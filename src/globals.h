@@ -40,6 +40,7 @@ struct Settings {
     bool startupDiag = true;            // log environment, modules, game folder and windows until the first D3D call (diag.cpp)
     bool earlyHooks = true;             // install the crash handler and input hooks when the DLL loads (0: at the first D3D call)
     bool screenRecipFix = true;         // pixel shaders reading the screen at vPos * screenSizeReciprocal: scale it per target (t11)
+    bool lrViewFix = true;              // Lightning Returns: view-space reconstruction (shadows) per eye (t12)
     bool lrClipFix = true;              // Lightning Returns: one clip-space eye correction for all patched draws (depth pre-pass match)
     // in-game settings menu (menu.cpp, vrkit)
     std::string menuChord = "l3r3";     // l3r3 | ltrt | none

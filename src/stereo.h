@@ -1,5 +1,6 @@
 #pragma once
 #include <d3d9.h>
+#include <vector>
 #include "xrbridge/ipc.h"
 
 namespace fvr {
@@ -15,7 +16,10 @@ namespace fvr {
 // into the game's UI target) becomes the eye image; the UI drawn afterwards is repeated into a transparent HUD
 // texture (premultiplied alpha).
 
-void StereoRegisterVS(void* shader, const DWORD* bytecode);   // parses the constant table
+void StereoRegisterVS(void* shader, const DWORD* bytecode, bool rayOffset = false);   // parses the constant table; rayOffset: StereoPatchVSCode patched it
+// Lightning Returns (lr_view_fix): vertex shaders that build a view ray with $s_projectionReciprocal get an offset term
+// (c255) for asymmetric eye frustums. true: *out holds the patched bytecode to create the shader with.
+bool StereoPatchVSCode(const DWORD* bytecode, std::vector<DWORD>* out);
 void StereoOnSetVS(void* shader);
 void StereoRegisterPS(void* shader, const DWORD* bytecode);   // screen-size reciprocal used with vPos (screen_recip_fix)
 void StereoOnSetPS(void* shader);
@@ -65,7 +69,7 @@ void StereoCameraPos(float out[3]);   // world position of the game camera (last
 bool StereoSceneCamera(float rot[3][3], long* frame, long eyeFrame[2]);
 // Native, batched (stereobatch.cpp).
 struct StereoPatchReg { int reg, count, ps; float right[4][4]; float game[4][4]; };   // ps: pixel shader constant
-enum { kStereoMaxPatches = 6 };
+enum { kStereoMaxPatches = 16 };
 int StereoRightPatches(StereoPatchReg out[kStereoMaxPatches]);                       // right-eye constants of the current draw
 void StereoBindPassTargets(IDirect3DDevice9* dev, bool right);       // the pass's targets: right-eye twins or the game's
 IDirect3DBaseTexture9* StereoTwinTexture(IDirect3DBaseTexture9* t);  // right-eye twin of a texture, or null
